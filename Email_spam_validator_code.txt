@@ -1,0 +1,389 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define TAPE_SIZE 1024
+
+enum State {
+    q_init,
+    q_from,
+    q_check_subject_start,
+    q_subject,
+    q_check_body_start,
+    q_body,
+    q_evaluate_score,
+    q_accept_safe,
+    q_halt_error
+};
+
+struct TuringMachine {
+    char tape[TAPE_SIZE];
+    int head;
+    enum State current_state;
+    int spam_score;
+    int machine_fault;
+};
+
+const char* spam_domains[] = { "win.net", "spam.com", "lottery.org" };
+int spam_domains_count = 3;
+
+const char* trusted_domains[] = { "gmail.com", "yahoo.com", "outlook.com" };
+int trusted_domains_count = 3;
+
+const char* spam_keywords[] = { "prize", "money", "free", "crypto", "click" };
+int spam_keywords_count = 5;
+
+int custom_strlen(const char* str) {
+    int len = 0;
+    while (str[len] != '\0') len++;
+    return len;
+}
+
+int custom_strstr(const char* haystack, const char* needle) {
+    int i, j;
+    int h_len = custom_strlen(haystack);
+    int n_len = custom_strlen(needle);
+    
+    if (n_len == 0) return 1;
+    for (i = 0; i <= h_len - n_len; i++) {
+        for (j = 0; j < n_len; j++) {
+            if (haystack[i + j] != needle[j]) break;
+        }
+        if (j == n_len) return 1;
+    }
+    return 0;
+}
+
+void print_box_top(const char* title) {
+    printf("\n+-----------------------------------------------------------------------------+\n");
+    printf("| %-75s |\n", title);
+    printf("+-----------------------------------------------------------------------------+\n");
+}
+
+void print_box_line(const char* text) {
+    printf("| %-75s |\n", text);
+}
+
+void print_box_bottom() {
+    printf("+-----------------------------------------------------------------------------+\n");
+}
+
+void read_word_at_head(struct TuringMachine* tm, char* buffer) {
+    int i = 0;
+    int current_head = tm->head;
+    while (tm->tape[current_head] != '\0' && 
+           tm->tape[current_head] != ' '  && 
+           tm->tape[current_head] != '#'  && 
+           tm->tape[current_head] != ':') {
+        buffer[i++] = tm->tape[current_head++];
+    }
+    buffer[i] = '\0';
+}
+
+void skip_whitespace_or_delimiter(struct TuringMachine* tm) {
+    while (tm->tape[tm->head] == ' ' || tm->tape[tm->head] == ':') {
+        tm->head++;
+    }
+}
+
+void overwrite_word_with_asterisk(struct TuringMachine* tm, int length) {
+    int k;
+    for (k = 0; k < length; k++) {
+        if (tm->tape[tm->head] != '\0' &&
+            tm->tape[tm->head] != '#'  &&
+            tm->tape[tm->head] != ' ') {
+            
+            char msg[128];
+            snprintf(msg, sizeof(msg), "[TM Write] '%c' overwritten with '*'", tm->tape[tm->head]);
+            print_box_line(msg);
+            tm->tape[tm->head] = '*';
+        }
+        tm->head++;
+    }
+}
+
+void run_turing_machine(struct TuringMachine* tm) {
+    char word_buffer[256];
+    char current_char;
+    int s, t, w, c;
+    int is_spam_dom, is_trusted, is_spam_wd, has_leetspeak;
+    char msg[128];
+    int box_open = 0; 
+
+    while (tm->current_state != q_accept_safe && tm->current_state != q_halt_error) {
+        
+        if (tm->head >= TAPE_SIZE || tm->tape[tm->head] == '\0') {
+            if (tm->current_state == q_body || tm->current_state == q_evaluate_score) {
+                tm->current_state = q_evaluate_score;
+            } else {
+                tm->current_state = q_halt_error;
+                tm->machine_fault = 1;
+                
+                if (!box_open) {
+                    print_box_top("[ WARNING / ERROR ]");
+                    box_open = 1;
+                }
+                print_box_line("[Warning] You need to add the FROM, BODY and SUBJECT for the analysis.");
+                print_box_bottom();
+                box_open = 0;
+                break;
+            }
+        }
+        
+        current_char = tm->tape[tm->head];
+        
+        if (tm->current_state == q_init) {
+            read_word_at_head(tm, word_buffer);
+            if (custom_strstr(word_buffer, "FROM")) {
+                tm->head += 4;
+                skip_whitespace_or_delimiter(tm);
+                tm->current_state = q_from;
+                print_box_top("[ FROM FIELD ANALYSIS ]");
+                box_open = 1;
+                print_box_line("[State Shift] Transitioned to q_from.");
+            } else {
+                tm->head++;
+            }
+        }
+        
+        else if (tm->current_state == q_from) {
+            if (current_char == '#') {
+                print_box_line("[State Shift] FROM done. Moving to Subject.");
+                print_box_bottom();
+                box_open = 0;
+                tm->head++;
+                tm->current_state = q_check_subject_start;
+                continue;
+            }
+            if (current_char == '@') {
+                tm->head++;
+                read_word_at_head(tm, word_buffer);
+                snprintf(msg, sizeof(msg), "[Analysis] Domain: %s", word_buffer);
+                print_box_line(msg);
+                
+                is_spam_dom = 0;
+                for (s = 0; s < spam_domains_count; s++) {
+                    if (custom_strstr(word_buffer, spam_domains[s])) {
+                        is_spam_dom = 1;
+                        break;
+                    }
+                }
+                if (is_spam_dom) {
+                    tm->spam_score += 15;
+                    snprintf(msg, sizeof(msg), "[BLACKLISTED] Score +15 => Total: %d", tm->spam_score);
+                    print_box_line(msg);
+                    overwrite_word_with_asterisk(tm, custom_strlen(word_buffer));
+                } else {
+                    is_trusted = 0;
+                    for (t = 0; t < trusted_domains_count; t++) {
+                        if (custom_strstr(word_buffer, trusted_domains[t])) {
+                            is_trusted = 1;
+                            break;
+                        }
+                    }
+                    if (is_trusted) {
+                        print_box_line("[TRUSTED] Domain verified as safe.");
+                    }
+                    tm->head += custom_strlen(word_buffer);
+                }
+            } else {
+                tm->head++;
+            }
+        }
+        
+        else if (tm->current_state == q_check_subject_start) {
+            read_word_at_head(tm, word_buffer);
+            if (custom_strstr(word_buffer, "SUBJECT")) {
+                tm->head += 7; 
+                skip_whitespace_or_delimiter(tm);
+                tm->current_state = q_subject;
+                print_box_top("[ SUBJECT FIELD ANALYSIS ]");
+                box_open = 2;
+                print_box_line("[State Shift] Transitioned to q_subject.");
+            } else {
+                tm->head++;
+            }
+        }
+        
+        else if (tm->current_state == q_subject) {
+            if (current_char == '#') {
+                print_box_line("[State Shift] SUBJECT done. Moving to Body.");
+                print_box_bottom();
+                box_open = 0;
+                tm->head++;
+                tm->current_state = q_check_body_start;
+                continue;
+            }
+            skip_whitespace_or_delimiter(tm);
+            read_word_at_head(tm, word_buffer);
+            if (custom_strlen(word_buffer) == 0) {
+                tm->head++;
+                continue;
+            }
+            
+            has_leetspeak = 0;
+            for (c = 0; word_buffer[c] != '\0'; c++) {
+                char ch = word_buffer[c];
+                if (ch == '0' || ch == '1' || ch == '3' || ch == '!' || ch == '$') {
+                    has_leetspeak = 1;
+                    break;
+                }
+            }
+            
+            is_spam_wd = 0;
+            for (w = 0; w < spam_keywords_count; w++) {
+                if (custom_strstr(word_buffer, spam_keywords[w])) {
+                    is_spam_wd = 1;
+                    break;
+                }
+            }
+            
+            if (is_spam_wd || has_leetspeak) {
+                if (has_leetspeak) {
+                    tm->spam_score += 5;
+                    print_box_line("[OBFUSCATION DETECTED] Score +5.");
+                }
+                tm->spam_score += 15;
+                snprintf(msg, sizeof(msg), "[SPAM WORD] Flagged. Score => %d", tm->spam_score);
+                print_box_line(msg);
+                overwrite_word_with_asterisk(tm, custom_strlen(word_buffer));
+            } else {
+                snprintf(msg, sizeof(msg), "[Safe] Word '%s' kept intact.", word_buffer);
+                print_box_line(msg);
+                tm->head += custom_strlen(word_buffer);
+            }
+        }
+        
+        else if (tm->current_state == q_check_body_start) {
+            read_word_at_head(tm, word_buffer);
+            if (custom_strstr(word_buffer, "BODY")) {
+                tm->head += 4;
+                skip_whitespace_or_delimiter(tm);
+                tm->current_state = q_body;
+                print_box_top("[ BODY FIELD ANALYSIS ]");
+                box_open = 3;
+                print_box_line("[State Shift] Transitioned to q_body.");
+            } else {
+                tm->head++;
+            }
+        }
+        
+        else if (tm->current_state == q_body) {
+            if (current_char == '#' || current_char == '\0') {
+                print_box_line("[State Shift] Body scan done. Evaluating score.");
+                print_box_bottom();
+                box_open = 0;
+                tm->current_state = q_evaluate_score;
+                continue;
+            }
+            skip_whitespace_or_delimiter(tm);
+            read_word_at_head(tm, word_buffer);
+            if (custom_strlen(word_buffer) == 0) {
+                tm->head++;
+                continue;
+            }
+            
+            has_leetspeak = 0;
+            for (c = 0; word_buffer[c] != '\0'; c++) {
+                char ch = word_buffer[c];
+                if (ch == '0' || ch == '1' || ch == '3' || ch == '!' || ch == '$') {
+                    has_leetspeak = 1;
+                    break;
+                }
+            }
+            
+            is_spam_wd = 0;
+            for (w = 0; w < spam_keywords_count; w++) {
+                if (custom_strstr(word_buffer, spam_keywords[w])) {
+                    is_spam_wd = 1;
+                    break;
+                }
+            }
+            
+            if (is_spam_wd || has_leetspeak) {
+                if (has_leetspeak) {
+                    tm->spam_score += 5;
+                    print_box_line("[OBFUSCATION DETECTED] In Body. Score +5.");
+                }
+                tm->spam_score += 15;
+                snprintf(msg, sizeof(msg), "[SPAM WORD] Flagged in Body. Score => %d", tm->spam_score);
+                print_box_line(msg);
+                overwrite_word_with_asterisk(tm, custom_strlen(word_buffer));
+            } else {
+                snprintf(msg, sizeof(msg), "[Safe] Word '%s' kept intact.", word_buffer);
+                print_box_line(msg);
+                tm->head += custom_strlen(word_buffer);
+            }
+        }
+        
+        else if (tm->current_state == q_evaluate_score) {
+            printf("[Metric Check] Cumulative Score: %d\n", tm->spam_score);
+            if (tm->spam_score >= 40) {
+                tm->current_state = q_accept_safe; 
+                printf("\n>>> Score >= 40. EMAIL IS SPAM! <<<\n");
+            } else {
+                printf("\n>>> Score < 40. Machine halt EMAIL IS SAFE. <<<\n");
+                break; 
+            }
+        }
+    }
+}
+
+int main() {
+    struct TuringMachine tm;
+    char from_input[128] = {0};
+    char subject_input[128] = {0};
+    char body_input[128] = {0};
+
+    printf("===============================================================================\n");
+    printf("                  SIMULATION: TURING MACHINE SPAM DETECTOR\n");
+    printf("===============================================================================\n\n");
+
+    tm.head = 0;
+    tm.current_state = q_init;
+    tm.spam_score = 0;
+    tm.machine_fault = 0;
+    memset(tm.tape, 0, TAPE_SIZE);
+
+    printf("Enter Sender Email: ");
+    fgets(from_input, sizeof(from_input), stdin);
+    from_input[strcspn(from_input, "\n")] = 0;
+
+    printf("Enter Email Subject: ");
+    fgets(subject_input, sizeof(subject_input), stdin);
+    subject_input[strcspn(subject_input, "\n")] = 0;
+
+    printf("Enter Email Body Context: ");
+    fgets(body_input, sizeof(body_input), stdin);
+    body_input[strcspn(body_input, "\n")] = 0;
+
+    if (custom_strlen(from_input) == 0 || custom_strlen(subject_input) == 0 || custom_strlen(body_input) == 0) {
+        snprintf(tm.tape, sizeof(tm.tape), "FROM:%s", from_input);
+    } else {
+        snprintf(tm.tape, sizeof(tm.tape), "FROM:%s#SUBJECT:%s#BODY:%s#", from_input, subject_input, body_input);
+    }
+
+    printf("\n>>> INITIALIZING TURING TAPE STREAM <<<\n");
+    printf("[System Log] Tape initialized with user content:\n\"%s\"\n\n", tm.tape);
+
+    printf(">>> RUNNING MACHINE TRANSITIONS <<<\n");
+    run_turing_machine(&tm);
+
+    printf("\n===============================================================================\n");
+    printf("                               FINAL EXECUTION REPORT\n");
+    printf("===============================================================================\n");
+    if (tm.machine_fault) {
+        printf("Target Halt State   : q_halt_error (MACHINE FAULT)\n");
+        printf("Final Machine Score : %d\n", tm.spam_score);
+    } else if (tm.current_state == q_accept_safe) {
+        printf("Target Halt State   : HALTED - EMAIL IS SPAM\n");
+        printf("Final Machine Score : %d\n", tm.spam_score);
+    } else {
+        printf("Target Halt State   : HALTED - EMAIL IS SAFE\n");
+        printf("Final Machine Score : %d\n", tm.spam_score);
+    }
+    printf("Modified Tape       : \"%s\"\n", tm.tape);
+    printf("===============================================================================\n");
+
+    return 0;
+}
